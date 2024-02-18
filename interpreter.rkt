@@ -11,7 +11,7 @@
 ;; Takes a file name and returns the value expressed in the code
 (define interpret
   (lambda (filename)
-    (interpret-start (car (parser filename)) (parser filename) '(() () return))))
+    (caddr (interpret-start (car (parser filename)) (parser filename) '(() () return)))))
 
 ;; Recurses through the entire parse tree and inteprets all starts and statements
 (define interpret-start
@@ -35,7 +35,7 @@
 (define interpret-declare
   (lambda (declare state)
     (cond ((not (eq? (get-value (cadr declare) state) '~)) 'NaN)
-          ((null? (caddr declare)) (interpret-declare-helper (cadr declare) 'd state))
+          ((null? (cddr declare)) (interpret-declare-helper (cadr declare) 'd state))
           (else (interpret-declare-helper (cadr declare) (caddr declare) state)))))
 
 ;; helper method for the declare non-terminal
@@ -87,7 +87,7 @@
   (lambda (statement state)
     (cond ((eq? 'NaN (interpret-boolean (cadr statement) state)) 'NaN)
           ((interpret-boolean (cadr statement) state) (interpret-statement (caddr statement) state))
-          ((not (null? (cadddr statement))) (interpret-statement (cadddr statement))))))
+          ((not (null? (cdddr statement))) (interpret-statement (cadddr statement) state)))))
 
 
 ;; evaluates a boolean expression as true or false
