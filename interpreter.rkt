@@ -3,8 +3,8 @@
 (require "simpleParser.rkt")
 (require "abstraction.rkt")
 
-;; state = ((x y z) (5 8 10))
-;; if a variable is only declared, then state = '((...x...) (...d...))
+;; state = ((x y z) (5 8 10) return)
+;; if a variable is only declared, then state = '((...x...) (...d...) return)
 ;; because x is only declared (d)
 
 
@@ -61,6 +61,7 @@
   (lambda (expression state)
     (cond
       ((eq? (leftoperand expression) 'NaN) 'NaN)
+      ((and (eq? (rightoperand expression) 'NaN) (eq? (operator expression) '-)) (* (interpret-expression (leftoperand expression) state) -1)) ; Negative Sign
       ((eq? (rightoperand expression) 'NaN) 'NaN)
       ((eq? (operator expression) '+) (+ (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
       ((eq? (operator expression) '-) (- (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
@@ -70,7 +71,9 @@
 
 (define operator (lambda (exp) (car exp)))
 (define leftoperand cadr)
-(define rightoperand caddr)
+(define rightoperand
+  (lambda (exp)
+    (if (null? (cddr exp)) 'NaN (caddr exp))))
 
 ;; performes variable assignment
 (define interpret-assign
@@ -87,8 +90,8 @@
   (lambda (statement state)
     (cond ((eq? 'NaN (interpret-boolean (cadr statement) state)) 'NaN)
           ((interpret-boolean (cadr statement) state) (interpret-statement (caddr statement) state))
-          ((not (null? (cdddr statement))) (interpret-statement (cadddr statement) state)))))
-
+          ((not (null? (cdddr statement))) (interpret-statement (cadddr statement) state))
+          (else state)))) ; No else condition
 
 ;; evaluates a boolean expression as true or false
 (define interpret-boolean
