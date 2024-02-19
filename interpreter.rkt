@@ -1,7 +1,6 @@
 #lang racket
 
 (require "simpleParser.rkt")
-(require "abstraction.rkt")
 
 ;; state = ((x y z) (5 8 10) return)
 ;; if a variable is only declared, then state = '((...x...) (...d...) return)
@@ -29,12 +28,12 @@
           ((eq? (car statement) 'while) (interpret-while statement state))
           ((eq? (car statement) 'if) (interpret-if statement state))
           ((eq? (car statement) 'return) (interpret-return statement state))
-          (else 'NaN))))
+          (else (error "Bad statement formation")))))
     
 ;; declares a new variable and optionally sets its value to an evaluated expression
 (define interpret-declare
   (lambda (declare state)
-    (cond ((not (eq? (get-value (cadr declare) state) '~)) 'NaN)
+    (cond ((not (eq? (get-value (cadr declare) state) '~)) (error "Variable already declared"))
           ((null? (cddr declare)) (interpret-declare-helper (cadr declare) 'd state))
           (else (interpret-declare-helper (cadr declare) (caddr declare) state)))))
 
@@ -47,38 +46,39 @@
 ;; evaluates any generic expression as either an integer or a boolean
 (define interpret-expression
   (lambda (expression state)
-    (cond ((or(eq? 'd expression) (eq? '~ expression)) 'NaN)
+    (cond ((or (eq? 'd expression) (eq? '~ expression)) (error "Variable not initialized"))
           ((number? expression) expression)
-          ((boolean? expression) expression)
-          ((eq? expression 'true) #t)
-          ((eq? expression 'false) #f)
+          ((ret-boolean? expression) expression)
           ((and (list? expression) (is-condition? expression)) (interpret-boolean expression state))
           ((list? expression) (interpret-int expression state))
-          (else (get-value expression state)))));is a variable
+          (else (interpret-expression (get-value expression state) state)))));is a variable
 
 ;; evaluates an integer expression
 (define interpret-int
   (lambda (expression state)
     (cond
-      ((eq? (leftoperand expression) 'NaN) 'NaN)
-      ((and (eq? (rightoperand expression) 'NaN) (eq? (operator expression) '-)) (* (interpret-expression (leftoperand expression) state) -1)) ; Negative Sign
-      ((eq? (rightoperand expression) 'NaN) 'NaN)
+      ((eq? (leftoperand expression) '~) (error "Bad statement formation"))
+      ((and (eq? (rightoperand expression) '~) (eq? (operator expression) '-)) (* (interpret-expression (leftoperand expression) state) -1)) ; Negative Sign
+      ((eq? (rightoperand expression) '~) (error "Bad statement formation"))
       ((eq? (operator expression) '+) (+ (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
       ((eq? (operator expression) '-) (- (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
       ((eq? (operator expression) '*) (* (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
       ((eq? (operator expression) '/) (quotient (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '%) (remainder (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))))
+      ((eq? (operator expression) '%) (remainder (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
+      (else (error "Bad statement formation")))))
 
 (define operator (lambda (exp) (car exp)))
 (define leftoperand cadr)
 (define rightoperand
   (lambda (exp)
-    (if (null? (cddr exp)) 'NaN (caddr exp))))
+    (if (null? (cddr exp)) '~ (caddr exp))))
 
 ;; performes variable assignment
 (define interpret-assign
   (lambda (assignment state)
-    (add-to-state (cadr assignment) (interpret-expression (caddr assignment) state) state)))
+    (if (eq? (get-value (cadr assignment) state) '~)
+        (error "Variable not declared")
+        (add-to-state (cadr assignment) (interpret-expression (caddr assignment) state) state))))
 
 ;; evaluates a return statement
 (define interpret-return
@@ -88,8 +88,7 @@
 ;; evaluates an if then else statement
 (define interpret-if
   (lambda (statement state)
-    (cond ((eq? 'NaN (interpret-boolean (cadr statement) state)) 'NaN)
-          ((interpret-boolean (cadr statement) state) (interpret-statement (caddr statement) state))
+    (cond ((interpret-boolean (cadr statement) state) (interpret-statement (caddr statement) state))
           ((not (null? (cdddr statement))) (interpret-statement (cadddr statement) state))
           (else state)))) ; No else condition
 
@@ -97,26 +96,24 @@
 (define interpret-boolean
   (lambda (expression state)
     (cond
-      ((eq? expression 'true) #t)
-      ((eq? expression 'false) #f)
-      ((eq? (leftoperand expression) 'NaN) 'NaN)
-      ((eq? (operator expression) '!) (not (interpret-expression (leftoperand expression) state)))
-      ((eq? (rightoperand expression) 'NaN) 'NaN)
-      ((eq? (operator expression) '||) (or (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '&&) (and (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '==) (eq? (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '!=) (not (eq? (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))
-      ((eq? (operator expression) '<)  (< (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '>)  (> (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '<=)  (<= (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      ((eq? (operator expression) '>=)  (>= (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
-      (else 'NaN))))
-
+      ((ret-boolean? expression) expression)
+      ((eq? (leftoperand expression) '~) (error "Bad statement formation"))
+      ((eq? (operator expression) '!) (ret-not (interpret-expression (leftoperand expression) state)))
+      ((eq? (rightoperand expression) '~) (error "Bad statement formation"))
+      ((eq? (operator expression) '||) (ret-or (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
+      ((eq? (operator expression) '&&) (ret-and (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))
+      ((eq? (operator expression) '==) (convert-boolean (eq? (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))
+      ((eq? (operator expression) '!=) (convert-boolean (not (eq? (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state)))))
+      ((eq? (operator expression) '<)  (convert-boolean (< (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))
+      ((eq? (operator expression) '>)  (convert-boolean (> (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))
+      ((eq? (operator expression) '<=)  (convert-boolean (<= (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))
+      ((eq? (operator expression) '>=)  (convert-boolean (>= (interpret-expression (leftoperand expression) state) (interpret-expression (rightoperand expression) state))))
+      (else (error "Bad statement formation")))))
 
 ;; Evaluates the while loop
 (define interpret-while
   (lambda (statement state)
-    (cond ((interpret-expression (cadr statement) state) (interpret-while statement (interpret-statement (caddr statement) state)))
+    (cond ((interpret-boolean (cadr statement) state) (interpret-while statement (interpret-statement (caddr statement) state)))
           (else state))))
 
 ;; Gets the value of a variable given the current state
@@ -151,13 +148,10 @@
           (else (list varList (cons (car valList)
                 (cadr (redefine-val-helper name value (cdr varList) (cdr valList)))))))))
 
-;; checks if a statement evaluates to a boolean or an integer
+;; checks if a complex expression evaluates to a boolean (false if an integer or non-complex expression)
 (define is-condition?
   (lambda (statement)
-    (cond ((eq? statement 'true) #t)
-          ((eq? statement 'false) #t)
-          ((boolean? statement) #t)
-          ((eq? (car statement) '==) #t)
+    (cond ((eq? (car statement) '==) #t)
           ((eq? (car statement) '!=) #t)
           ((eq? (car statement) '<) #t)
           ((eq? (car statement) '>) #t)
@@ -167,4 +161,36 @@
           ((eq? (car statement) '||) #t)
           ((eq? (car statement) '!) #t)
           (else #f))))
-           
+
+; Checks if an atom is 'true or 'false
+(define ret-boolean?
+  (lambda (atom)
+    (or (eq? atom 'true) (eq? atom 'false))))
+
+; Converts #t and #f to 'true and 'false, respectively
+(define convert-boolean
+  (lambda (bool)
+    (if bool
+        'true
+        'false)))
+
+; Returns negated version of input atoms 'true and 'false (as #t or #f)
+(define ret-not
+  (lambda (bool)
+    (if (eq? bool 'true)
+        #f
+        #t)))
+
+; Returns result of bool1 && bool2 for input atoms 'true and 'false (as #t or #f)
+(define ret-and
+  (lambda (bool1 bool2)
+    (if (and (eq? bool1 'true) (eq? bool2 'true))
+        #t
+        #f)))
+
+; Returns result of bool1 || bool2 for input atoms 'true and 'false (as #t or #f)
+(define ret-or
+  (lambda (bool1 bool2)
+    (if (or (eq? bool1 'true) (eq? bool2 'true))
+        #t
+        #f)))
