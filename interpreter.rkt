@@ -88,7 +88,7 @@
 ;; evaluates an if then else statement
 (define interpret-if
   (lambda (statement state)
-    (cond ((interpret-boolean (cadr statement) state) (interpret-statement (caddr statement) state))
+    (cond ((eq? (interpret-boolean (cadr statement) state) 'true) (interpret-statement (caddr statement) state))
           ((not (null? (cdddr statement))) (interpret-statement (cadddr statement) state))
           (else state)))) ; No else condition
 
@@ -113,7 +113,7 @@
 ;; Evaluates the while loop
 (define interpret-while
   (lambda (statement state)
-    (cond ((interpret-boolean (cadr statement) state) (interpret-while statement (interpret-statement (caddr statement) state)))
+    (cond ((eq? (interpret-boolean (cadr statement) state) 'true) (interpret-while statement (interpret-statement (caddr statement) state)))
           (else state))))
 
 ;; Gets the value of a variable given the current state
@@ -178,19 +178,19 @@
 (define ret-not
   (lambda (bool)
     (if (eq? bool 'true)
-        #f
-        #t)))
+        'false
+        'true)))
 
 ; Returns result of bool1 && bool2 for input atoms 'true and 'false (as #t or #f)
 (define ret-and
   (lambda (bool1 bool2)
     (if (and (eq? bool1 'true) (eq? bool2 'true))
-        #t
-        #f)))
+        'true
+        'false)))
 
 ; Returns result of bool1 || bool2 for input atoms 'true and 'false (as #t or #f)
 (define ret-or
   (lambda (bool1 bool2)
     (if (or (eq? bool1 'true) (eq? bool2 'true))
-        #t
-        #f)))
+        'true
+        'false)))
