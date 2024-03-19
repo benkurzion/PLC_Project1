@@ -9,16 +9,25 @@
 ;; Gets the variable values of a state
 (define get-values cadr)
 
-;; Gets the return value of a state
-(define get-return caddr)
 
-;; Converts list of variable names, variable values, and a return value into a state
-(define pack-state
-  (lambda (varList valList return)
-    (list varList valList return)))
+;; Converts list of variable names and variable values into a state
+(define pack-layer
+  (lambda (varList valList)
+    (list varList valList)))
 
 ;; Initializes an empty state
-(define empty-state '(() () return)) ; variables, values, return value
+(define empty-state '((() ()))) ; variables, values
+
+
+;; Add a new, empty layer to the current state
+(define add-new-layer
+  (lambda (state)
+    (cons '(() ()) state)))
+
+;; Removes the top layer of the state
+(define pop-layer
+  (lambda (state)
+    (cdr state)))
 
 
 ;;;; Statement Functions
@@ -26,24 +35,26 @@
 ;; Takes a file name and returns the value expressed in the code
 (define interpret
   (lambda (filename)
-    (get-return (interpret-start (next-element (parser filename)) (parser filename) empty-state))))
+    (call/cc (lambda (k) (interpret-start (next-element (parser filename)) (parser filename) empty-state k)))))
 
 ;; Recurses through the entire parse tree and inteprets all starts and statements
 (define interpret-start
-  (lambda (statement start state)
-    (cond ((null? (rest-elements start)) (interpret-statement (next-element start) state))
-          (else (interpret-start (interpret-statement(next-element start) state)
-                (rest-elements start) (interpret-statement(next-element start) state))))))
+  (lambda (statement start state return)
+    (cond ((null? statement) (pop-layer state))
+          ((null? (rest-elements start)) (interpret-start null null (interpret-statement(next-element start) state return) return))
+          (else (interpret-start (interpret-statement(next-element start) state return)
+                (rest-elements start) (interpret-statement(next-element start) state return))))))
+
 
 ;; Considers a new statement and figures out how to evalute it
 (define interpret-statement
-  (lambda (statement state)
-    (cond ((not (eq? 'return (get-return state))) (get-return state))
-          ((eq? (statement-type statement) '=) (interpret-assign statement state))
+  (lambda (statement state return)
+    (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
-          ((eq? (statement-type statement) 'while) (interpret-while statement state))
-          ((eq? (statement-type statement) 'if) (interpret-if statement state))
-          ((eq? (statement-type statement) 'return) (interpret-return statement state))
+          ((eq? (statement-type statement) 'while) (interpret-while statement state return))
+          ((eq? (statement-type statement) 'if) (interpret-if statement state return))
+          ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
+          ((eq? (statement-type statement) 'begin) (interpret-start (next-element (rest-elements statement)) (rest-elements statement) (add-new-layer state) return))
           (else (error "Bad statement formation")))))
 
 ;; Gets highest element in parse tree segment
@@ -100,7 +111,15 @@
 ;; Gets the value of a variable given the current state
 (define get-value
   (lambda (name state)
-    (get-value-helper name (get-names state) (get-values state))))
+    (cond ((eq? '~ (get-value-helper name (get-names (get-top-layer state)) (get-values (get-top-layer state))))
+           (get-value name (get-other-layers state)))
+          (else (get-value-helper name (get-names (get-top-layer state)) (get-values (get-top-layer state)))))))
+    
+;; Gets the top layer from the state
+(define get-top-layer car)
+
+;; Gets all the other layers from the state not including the top
+(define get-other-layers cdr)
 
 (define get-value-helper
   (lambda (name varList valList)
@@ -113,17 +132,20 @@
 (define add-to-state
   (lambda (name value state)
     (cond ((not (eq? '~ (get-value name state))) (redefine-value name value state)) ; Already declared
-    (else (pack-state (cons name (get-names state)) (cons value (get-values state)) (get-return state)))))) ; Not declared
+    (else (cons (pack-layer (cons name (get-names (get-top-layer state))) (cons value (get-values (get-top-layer state)))) (get-other-layers state)))))) ; Not declared. Add value to top layer
 
 ;; Changes a variable value into the given value in a new state
 (define redefine-value
   (lambda (name value state)
-    (append (redefine-val-helper name value (get-names state) (get-values state)) (list (get-return state)))))
+    (cond ((eq? '~ (redefine-val-helper name value (get-names (get-top-layer state)) (get-values (get-top-layer state))))
+           (redefine-value name value (get-other-layers state)))
+          (else (cons (redefine-val-helper name value (get-names (get-top-layer state)) (get-values (get-top-layer state))) (get-other-layers state))))))
 
 ; helper function to redefine a declared variable
 (define redefine-val-helper
   (lambda (name value varList valList)
-    (cond ((eq? (car varList) name) (list varList (cons value (cdr valList)))) ; Reassigns value to first element in sublist of variables
+    (cond ((null? varList) '~)
+          ((eq? (car varList) name) (list varList (cons value (cdr valList)))) ; Reassigns value to first element in sublist of variables
           (else (list varList (cons (car valList) (cadr (redefine-val-helper name value (cdr varList) (cdr valList))))))))) ; Looks through rest of variables
 
 
@@ -237,8 +259,8 @@
 
 ;; Evaluates a return statement
 (define interpret-return
-  (lambda (return state)
-    (list (get-names state) (get-values state) (interpret-expression (ret-value return) state))))
+  (lambda (statement state)
+    (interpret-expression (ret-value statement) state)))
 
 ;; Gets return value of a return statement
 (define ret-value cadr)
@@ -248,9 +270,9 @@
      
 ;; Evaluates an if then else statement
 (define interpret-if
-  (lambda (statement state)
-    (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state))
-          ((has-else? statement) (interpret-statement (if-else statement) state))
+  (lambda (statement state return)
+    (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state return))
+          ((has-else? statement) (interpret-statement (if-else statement) state return))
           (else state)))) ; No else condition
 
 ;; Returns condition of if statement
@@ -272,9 +294,14 @@
 
 ;; Evaluates a while loop
 (define interpret-while
-  (lambda (statement state)
-    (cond ((eq? (interpret-boolean (while-condition statement) state) 'true) (interpret-while statement (interpret-statement (while-statement statement) state)))
+  (lambda (statement state return next-line break)
+    (cond ((eq? (interpret-boolean (while-condition statement) state) 'true) (interpret-while statement (interpret-statement (while-statement statement) state return) return))
           (else state))))
+
+(define repeat
+  (lambda (statement state return next-line break)
+    (interpret-while statement state return next-line break)))
+
 
 ;; Returns condition of while statement
 (define while-condition cadr)
