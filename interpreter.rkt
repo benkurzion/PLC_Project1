@@ -35,16 +35,15 @@
 ;; Takes a file name and returns the value expressed in the code
 (define interpret
   (lambda (filename)
-    (call/cc (lambda (k) (interpret-start (parser filename) empty-state k null null null)))))
+    (call/cc (lambda (k) (interpret-block (parser filename) empty-state k null null null)))))
 
 ;; Recurses through the entire parse tree and inteprets all starts and statements
-(define interpret-start
+(define interpret-block
   (lambda (start state return next break continue)
     (cond ((null? start) (pop-layer state))
-          ((null? (rest-elements start)) (interpret-start null (interpret-statement (next-element start) state return next break continue) return next break continue))
-          (else (interpret-start (rest-elements start)
-                                 (interpret-statement (next-element start) state return
-                                                      (call/cc (lambda (k) (interpret-statement (next-element (rest-elements start)) k return next break continue)))) break continue) return next break continue))))
+          ((null? (rest-elements start)) (interpret-block null (interpret-statement (next-element start) state return next break continue) return next break continue))
+          (else (interpret-block (rest-elements start)
+                                 (interpret-statement (next-element start) state return (lambda (s) (interpret-block (rest-elements start) s return next break continue)) break continue) return next break continue)))))
 
 
 ;; Considers a new statement and figures out how to evalute it
@@ -53,9 +52,9 @@
     (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
           ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k))) return next break continue))
-          ((eq? (statement-type statement) 'if) (interpret-if statement state return))
+          ((eq? (statement-type statement) 'if) (interpret-if statement state return next break continue))
           ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
-          ((eq? (statement-type statement) 'begin) (interpret-start (next-element (rest-elements statement)) (rest-elements statement) (add-new-layer state) return next break continue))
+          ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue))
           ((eq? (statement-type statement) 'break) (interpret-break break state))
           ((eq? (statement-type statement) 'continue) (continue state))
           (else (error "Bad statement formation")))))
@@ -114,7 +113,8 @@
 ;; Gets the value of a variable given the current state
 (define get-value
   (lambda (name state)
-    (cond ((eq? '~ (get-value-helper name (get-names (get-top-layer state)) (get-values (get-top-layer state))))
+    (cond ((null? state) '~)
+          ((eq? '~ (get-value-helper name (get-names (get-top-layer state)) (get-values (get-top-layer state))))
            (get-value name (get-other-layers state)))
           (else (get-value-helper name (get-names (get-top-layer state)) (get-values (get-top-layer state)))))))
     
