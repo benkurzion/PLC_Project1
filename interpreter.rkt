@@ -35,26 +35,29 @@
 ;; Takes a file name and returns the value expressed in the code
 (define interpret
   (lambda (filename)
-    (call/cc (lambda (k) (interpret-start (next-element (parser filename)) (parser filename) empty-state k)))))
+    (call/cc (lambda (k) (interpret-start (parser filename) empty-state k null null null)))))
 
 ;; Recurses through the entire parse tree and inteprets all starts and statements
 (define interpret-start
-  (lambda (statement start state return)
-    (cond ((null? statement) (pop-layer state))
-          ((null? (rest-elements start)) (interpret-start null null (interpret-statement(next-element start) state return) return))
-          (else (interpret-start (interpret-statement(next-element start) state return)
-                (rest-elements start) (interpret-statement(next-element start) state return))))))
+  (lambda (start state return next break continue)
+    (cond ((null? start) (pop-layer state))
+          ((null? (rest-elements start)) (interpret-start null (interpret-statement (next-element start) state return next break continue) return next break continue))
+          (else (interpret-start (rest-elements start)
+                                 (interpret-statement (next-element start) state return
+                                                      (call/cc (lambda (k) (interpret-statement (next-element (rest-elements start)) k return next break continue)))) break continue) return next break continue))))
 
 
 ;; Considers a new statement and figures out how to evalute it
 (define interpret-statement
-  (lambda (statement state return)
+  (lambda (statement state return next break continue)
     (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
-          ((eq? (statement-type statement) 'while) (interpret-while statement state return))
+          ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k))) return next break continue))
           ((eq? (statement-type statement) 'if) (interpret-if statement state return))
           ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
-          ((eq? (statement-type statement) 'begin) (interpret-start (next-element (rest-elements statement)) (rest-elements statement) (add-new-layer state) return))
+          ((eq? (statement-type statement) 'begin) (interpret-start (next-element (rest-elements statement)) (rest-elements statement) (add-new-layer state) return next break continue))
+          ((eq? (statement-type statement) 'break) (interpret-break break state))
+          ((eq? (statement-type statement) 'continue) (continue state))
           (else (error "Bad statement formation")))))
 
 ;; Gets highest element in parse tree segment
@@ -269,7 +272,7 @@
 ;;;; Conditional Functions
      
 ;; Evaluates an if then else statement
-(define interpret-if
+(define interpret-if ;; change param signature and edit all the interpret states
   (lambda (statement state return)
     (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state return))
           ((has-else? statement) (interpret-statement (if-else statement) state return))
@@ -294,17 +297,24 @@
 
 ;; Evaluates a while loop
 (define interpret-while
-  (lambda (statement state return next-line break)
-    (cond ((eq? (interpret-boolean (while-condition statement) state) 'true) (interpret-while statement (interpret-statement (while-statement statement) state return) return))
-          (else state))))
+  (lambda (statement state return next old-break continue)
+    (loop (while-condition statement) (while-statement statement) state return next (lambda (s1) (next (pop-layer s1)))
+          (lambda (s2) (interpret-while statement s2 return next old-break continue)))))
 
-(define repeat
-  (lambda (statement state return next-line break)
-    (interpret-while statement state return next-line break)))
-
+(define loop
+  (lambda (condition body state return next break continue)
+    (cond ((eq? 'true (interpret-boolean condition state))
+           (loop condition body (interpret-statement body state return next break continue) return next break continue))
+          (else (next state))))) ; SHOULD POP???? FIXME/FATAL
 
 ;; Returns condition of while statement
 (define while-condition cadr)
 
 ;; Returns block of while statement
 (define while-statement caddr)
+
+;; Evaluates a 'break atom
+(define interpret-break
+  (lambda (break state)
+    (cond ((null? break) (error "Break Outside Loop Body Error"))
+          (else (break state)))))
