@@ -272,10 +272,10 @@
 ;;;; Conditional Functions
      
 ;; Evaluates an if then else statement
-(define interpret-if ;; change param signature and edit all the interpret states
-  (lambda (statement state return)
-    (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state return))
-          ((has-else? statement) (interpret-statement (if-else statement) state return))
+(define interpret-if
+  (lambda (statement state return next break continue)
+    (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state return next break continue))
+          ((has-else? statement) (interpret-statement (if-else statement) state return next break continue))
           (else state)))) ; No else condition
 
 ;; Returns condition of if statement
