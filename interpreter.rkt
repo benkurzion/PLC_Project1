@@ -15,9 +15,11 @@
   (lambda (varList valList)
     (list varList valList)))
 
-;; Initializes an empty state
-(define empty-state '((() ()))) ; variables, values
+;; Returns an empty layer
+(define empty-layer '(() ()))
 
+;; Returns an empty state
+(define empty-state (list empty-layer)) ; variables, values
 
 ;; Add a new, empty layer to the current state
 (define add-new-layer
@@ -51,7 +53,7 @@
   (lambda (statement state return next break continue)
     (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
-          ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k))) return next break continue))
+          ((eq? (statement-type statement) 'while) (interpret-while statement (interpret-while statement state return next)))
           ((eq? (statement-type statement) 'if) (interpret-if statement state return next break continue))
           ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
           ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue))
@@ -140,14 +142,15 @@
 ;; Changes a variable value into the given value in a new state
 (define redefine-value
   (lambda (name value state)
-    (cond ((eq? '~ (redefine-val-helper name value (get-names (get-top-layer state)) (get-values (get-top-layer state))))
-           (redefine-value name value (get-other-layers state)))
-          (else (cons (redefine-val-helper name value (get-names (get-top-layer state)) (get-values (get-top-layer state))) (get-other-layers state))))))
+    (cond ((null? state) '())
+          ((eq? (get-top-layer state) (redefine-val-helper name value (get-names (get-top-layer state)) (get-values (get-top-layer state))))
+           (cons (get-top-layer state) (redefine-value name value (get-other-layers state))))
+          (else (cons (redefine-val-helper name value (get-names (get-top-layer state)) (get-values (get-top-layer state))) (redefine-value name value (get-other-layers state)))))))
 
 ; helper function to redefine a declared variable
 (define redefine-val-helper
   (lambda (name value varList valList)
-    (cond ((null? varList) '~)
+    (cond ((null? varList) empty-layer)
           ((eq? (car varList) name) (list varList (cons value (cdr valList)))) ; Reassigns value to first element in sublist of variables
           (else (list varList (cons (car valList) (cadr (redefine-val-helper name value (cdr varList) (cdr valList))))))))) ; Looks through rest of variables
 
@@ -297,15 +300,15 @@
 
 ;; Evaluates a while loop
 (define interpret-while
-  (lambda (statement state return next old-break continue)
-    (loop (while-condition statement) (while-statement statement) state return next (lambda (s1) (next (pop-layer s1)))
-          (lambda (s2) (interpret-while statement s2 return next old-break continue)))))
+  (lambda (statement state return next)
+    (loop (while-condition statement) (while-statement statement) state return next)))
 
 (define loop
-  (lambda (condition body state return next break continue)
+  (lambda (condition body state return next)
     (cond ((eq? 'true (interpret-boolean condition state))
-           (loop condition body (interpret-statement body state return next break continue) return next break continue))
-          (else (next state))))) ; SHOULD POP???? FIXME/FATAL
+           (interpret-statement body state return (lambda (s) (loop condition body s return next)) (lambda (s) (next s)) (lambda (s) (loop condition body s return next))))
+           ;(loop condition body (interpret-statement body state return next break continue) return next break continue))
+          (else (next state)))))
 
 ;; Returns condition of while statement
 (define while-condition cadr)
