@@ -38,20 +38,22 @@
 ;; Takes a file name and returns the value expressed in the code
 (define interpret
   (lambda (filename)
-    (call/cc (lambda (k) (interpret-block (parser filename) empty-state k null null null)))))
+    (call/cc (lambda (k) (interpret-block (parser filename) empty-state k null null null null)))))
 
 ;; Recurses through the entire parse tree and inteprets all starts and statements
 (define interpret-block
-  (lambda (start state return next break continue)
+  (lambda (start state return next break continue throw)
     (cond ((null? start) (pop-layer state))
-          ((null? (rest-elements start)) (interpret-block null (interpret-statement (next-element start) state return next break continue) return next break continue))
+          ((null? (rest-elements start)) (interpret-block null (interpret-statement (next-element start) state return next break continue throw) return next break continue throw))
           (else (interpret-block (rest-elements start)
-                                 (interpret-statement (next-element start) state return (lambda (s) (interpret-block (rest-elements start) s return next break continue)) break continue) return next break continue)))))
+                                 (interpret-statement (next-element start) state return
+                                                      (lambda (s) (interpret-block (rest-elements start) s return next break continue throw)) break continue throw)
+                                 return next break continue throw)))))
 
 
 ;; Considers a new statement and figures out how to evalute it
 (define interpret-statement
-  (lambda (statement state return next break continue)
+  (lambda (statement state return next break continue throw)
     (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
           ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k))) return next break continue))
@@ -60,7 +62,44 @@
           ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue))
           ((eq? (statement-type statement) 'break) (interpret-break break state))
           ((eq? (statement-type statement) 'continue) (interpret-continue continue state))
+          ((eq? (statement-type statement) 'throw) (interpret-throw statement state (lambda (t) (throw t))))
+          ((eq? (statement-type statement) 'try) (interpret-try statement state return next break continue throw))
           (else (error "Bad statement formation")))))
+
+(define interpret-throw
+  (lambda (statement state throw)
+    (cond ((null? throw) (error "Uncaught exception error"))
+          ((throw (interpret-expression statement state))))))
+
+(define interpret-try
+  (lambda (statement state return next break continue throw)
+    (let* ((newNext (lambda (s) (interpret-finally (get-finally statement) s return next break continue throw)))
+          (newContinue (lambda (s) (interpret-finally (get-finally statement) s return next break continue throw)))
+          (newBreak (lambda (s) (interpret-finally (get-finally statement) s return break break continue throw)))
+          (newThrow (lambda (s e) (interpret-finally (get-finally statement) s return next break continue)))
+          (myThrow (lambda (s e) (interpret-catch (get-catch statement) s return
+                                     (lambda (s1) (interpret-finally statement s1 return next break continue throw)) newBreak continue newThrow))))
+          (interpret-block (get-try statement) (add-new-layer state) return newNext newBreak newContinue newThrow))))
+
+(define interpret-finally
+  (lambda (statement state return next break continue throw)
+    (interpret-block (cdr statement) (add-new-layer state) return next break continue throw)))
+
+(define interpret-catch
+  (lambda (statement state return next break continue throw)
+    (interpret-block (cdr statement) (add-new-layer state) return next break continue throw)))
+
+(define get-try
+  (lambda (statement)
+    (car statement)))
+
+(define get-catch
+  (lambda (statement)
+    (cadr statement)))
+
+(define get-finally
+  (lambda (statement)
+    (caddr statement)))
 
 ;; Gets highest element in parse tree segment
 (define next-element car)
