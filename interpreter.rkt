@@ -56,10 +56,10 @@
   (lambda (statement state return next break continue throw)
     (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
-          ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k))) return next break continue))
-          ((eq? (statement-type statement) 'if) (interpret-if statement state return next break continue))
+          ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k throw))) return next break continue throw))
+          ((eq? (statement-type statement) 'if) (interpret-if statement state return next break continue throw))
           ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
-          ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue))
+          ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue throw))
           ((eq? (statement-type statement) 'break) (interpret-break break state))
           ((eq? (statement-type statement) 'continue) (interpret-continue continue state))
           ((eq? (statement-type statement) 'throw) (interpret-throw statement state (lambda (t) (throw t))))
@@ -83,23 +83,23 @@
 
 (define interpret-finally
   (lambda (statement state return next break continue throw)
-    (interpret-block (cdr statement) (add-new-layer state) return next break continue throw)))
+    (interpret-block (rest-elements statement) (add-new-layer state) return next break continue throw)))
 
 (define interpret-catch
   (lambda (statement state return next break continue throw)
-    (interpret-block (cdr statement) (add-new-layer state) return next break continue throw)))
+    (interpret-block (rest-elements statement) (add-new-layer state) return next break continue throw)))
 
 (define get-try
   (lambda (statement)
-    (car statement)))
+    (cadr statement)))
 
 (define get-catch
   (lambda (statement)
-    (cadr statement)))
+    (caddr statement)))
 
 (define get-finally
   (lambda (statement)
-    (caddr statement)))
+    (cadddr statement)))
 
 ;; Gets highest element in parse tree segment
 (define next-element car)
@@ -316,9 +316,9 @@
      
 ;; Evaluates an if then else statement
 (define interpret-if
-  (lambda (statement state return next break continue)
-    (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state return next break continue))
-          ((has-else? statement) (interpret-statement (if-else statement) state return next break continue))
+  (lambda (statement state return next break continue throw)
+    (cond ((eq? (interpret-boolean (if-condition statement) state) 'true) (interpret-statement (if-then statement) state return next break continue throw))
+          ((has-else? statement) (interpret-statement (if-else statement) state return next break continue throw))
           (else state)))) ; No else condition
 
 ;; Returns condition of if statement
@@ -340,14 +340,14 @@
 
 ;; Evaluates a while loop
 (define interpret-while
-  (lambda (statement state return next old-break continue)
+  (lambda (statement state return next old-break continue throw)
     (loop (while-condition statement) (while-statement statement) state return next (lambda (s) (next (pop-layer s)))
-          (lambda (s) (interpret-while statement (pop-layer s) return next old-break continue)))))
+          (lambda (s) (interpret-while statement (pop-layer s) return next old-break continue throw)) throw)))
 
 (define loop
-  (lambda (condition body state return next break continue)
+  (lambda (condition body state return next break continue throw)
     (cond ((eq? 'true (interpret-boolean condition state))
-           (loop condition body (interpret-statement body state return next break continue) return next break continue))
+           (loop condition body (interpret-statement body state return next break continue throw) return next break continue throw))
           (else (next state))))) ; SHOULD POP???? FIXME/FATAL
 
 ;; Returns condition of while statement
