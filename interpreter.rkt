@@ -59,7 +59,7 @@
           ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
           ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue))
           ((eq? (statement-type statement) 'break) (interpret-break break state))
-          ((eq? (statement-type statement) 'continue) (continue state))
+          ((eq? (statement-type statement) 'continue) (interpret-continue continue state))
           (else (error "Bad statement formation")))))
 
 ;; Gets highest element in parse tree segment
@@ -302,8 +302,8 @@
 ;; Evaluates a while loop
 (define interpret-while
   (lambda (statement state return next old-break continue)
-    (loop (while-condition statement) (while-statement statement) state return next (lambda (s1) (next (pop-layer s1)))
-          (lambda (s2) (interpret-while statement s2 return next old-break continue)))))
+    (loop (while-condition statement) (while-statement statement) state return next (lambda (s) (next (pop-layer s)))
+          (lambda (s) (interpret-while statement (pop-layer s) return next old-break continue)))))
 
 (define loop
   (lambda (condition body state return next break continue)
@@ -317,8 +317,16 @@
 ;; Returns block of while statement
 (define while-statement caddr)
 
-;; Evaluates a 'break atom
+;; Executes a break statement
 (define interpret-break
   (lambda (break state)
-    (cond ((null? break) (error "Break Outside Loop Body Error"))
-          (else (break state)))))
+    (if (null? break)
+        (error "Break outside loop body")
+        (break state))))
+
+;; Executes a continue statement
+(define interpret-continue
+  (lambda (continue state)
+    (if (null? continue)
+        (error "Continue outside loop body")
+        (continue state))))
