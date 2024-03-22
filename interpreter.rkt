@@ -16,10 +16,11 @@
     (list varList valList)))
 
 ;; Returns an empty layer
-(define empty-layer '(() ()))
+(define empty-layer (list null null))
 
 ;; Returns an empty state
 (define empty-state (list empty-layer)) ; variables, values
+
 
 ;; Add a new, empty layer to the current state
 (define add-new-layer
@@ -53,7 +54,7 @@
   (lambda (statement state return next break continue)
     (cond ((eq? (statement-type statement) '=) (interpret-assign statement state))
           ((eq? (statement-type statement) 'var) (interpret-declare statement state))
-          ((eq? (statement-type statement) 'while) (interpret-while statement (interpret-while statement state return next)))
+          ((eq? (statement-type statement) 'while) (interpret-while statement (call/cc (lambda (k) (interpret-while statement state return next break k))) return next break continue))
           ((eq? (statement-type statement) 'if) (interpret-if statement state return next break continue))
           ((eq? (statement-type statement) 'return) (return (interpret-return statement state)))
           ((eq? (statement-type statement) 'begin) (interpret-block (rest-elements statement) (add-new-layer state) return next break continue))
@@ -300,15 +301,15 @@
 
 ;; Evaluates a while loop
 (define interpret-while
-  (lambda (statement state return next)
-    (loop (while-condition statement) (while-statement statement) state return next)))
+  (lambda (statement state return next old-break continue)
+    (loop (while-condition statement) (while-statement statement) state return next (lambda (s1) (next (pop-layer s1)))
+          (lambda (s2) (interpret-while statement s2 return next old-break continue)))))
 
 (define loop
-  (lambda (condition body state return next)
+  (lambda (condition body state return next break continue)
     (cond ((eq? 'true (interpret-boolean condition state))
-           (interpret-statement body state return (lambda (s) (loop condition body s return next)) (lambda (s) (next s)) (lambda (s) (loop condition body s return next))))
-           ;(loop condition body (interpret-statement body state return next break continue) return next break continue))
-          (else (next state)))))
+           (loop condition body (interpret-statement body state return next break continue) return next break continue))
+          (else (next state))))) ; SHOULD POP???? FIXME/FATAL
 
 ;; Returns condition of while statement
 (define while-condition cadr)
