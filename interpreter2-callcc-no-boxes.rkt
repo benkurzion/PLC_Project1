@@ -39,10 +39,11 @@
       ((eq? 'while (statement-type statement)) (interpret-while statement environment return throw))
       ((eq? 'continue (statement-type statement)) (continue environment))
       ((eq? 'break (statement-type statement)) (break environment))
-      ((eq? 'begin (statement-type statement)) (interpret-block statement environment return break continue throw))
+      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment) return break continue throw))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw))
       ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment))
+      ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment return break continue throw))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 ; Calls the return continuation with the given expression value
@@ -85,7 +86,7 @@
 (define interpret-block
   (lambda (statement environment return break continue throw)
     (pop-frame (interpret-statement-list (cdr statement)
-                                         (push-frame environment)
+                                         (environment)
                                          return
                                          (lambda (env) (break (pop-frame env)))
                                          (lambda (env) (continue (pop-frame env)))
@@ -103,17 +104,17 @@
 (define create-throw-catch-continuation
   (lambda (catch-statement environment return break continue throw jump finally-block)
     (cond
-      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block env return break continue throw)))) 
+      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env) return break continue throw)))) 
       ((not (eq? 'catch (statement-type catch-statement))) (myerror "Incorrect catch statement"))
       (else (lambda (ex env)
               (jump (interpret-block finally-block
-                                     (pop-frame (interpret-statement-list 
+                                     (push-frame (pop-frame (interpret-statement-list 
                                                  (get-body catch-statement) 
                                                  (insert (catch-var catch-statement) ex (push-frame env))
                                                  return 
                                                  (lambda (env2) (break (pop-frame env2))) 
                                                  (lambda (env2) (continue (pop-frame env2))) 
-                                                 (lambda (v env2) (throw v (pop-frame env2)))))
+                                                 (lambda (v env2) (throw v (pop-frame env2))))))
                                      return break continue throw)))))))
 
 ; To interpret a try block, we must adjust  the return, break, continue continuations to interpret the finally block if any of them are used.
@@ -124,12 +125,12 @@
      (lambda (jump)
        (let* ((finally-block (make-finally-block (get-finally statement)))
               (try-block (make-try-block (get-try statement)))
-              (new-return (lambda (v) (begin (interpret-block finally-block environment return break continue throw) (return v))))
-              (new-break (lambda (env) (break (interpret-block finally-block env return break continue throw))))
-              (new-continue (lambda (env) (continue (interpret-block finally-block env return break continue throw))))
+              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment) return break continue throw) (return v))))
+              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env) return break continue throw))))
+              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env) return break continue throw))))
               (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block)))
          (interpret-block finally-block
-                          (interpret-block try-block environment new-return new-break new-continue new-throw)
+                          (push-frame (interpret-block try-block (push-frame environment) new-return new-break new-continue new-throw))
                           return break continue throw))))))
 
 ; helper methods so that I can reuse the interpret-block method on the try and finally blocks
@@ -153,6 +154,67 @@
       ((eq? expr 'false) #f)
       ((not (list? expr)) (lookup expr environment))
       (else (eval-operator expr environment)))))
+
+;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body))))
+
+
+(define interpret-function-call
+  (lambda (statement environment return break continue throw)
+    (call/cc (lambda (new-return) 
+               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment)
+                                                              (get-function-param-vals statement) (push-frame environment)))
+                     (function-body (get-function-body-environment (get-function-name statement) environment))
+                     (new-break (lambda (s) (error "Break out of loop")))
+                     (new-continue (lambda (s) (error "Continue used outside of loop"))))
+                 (interpret-block function-body new-env new-return new-break new-continue throw))))))
+                                                      
+; Returns the function parameters when the function is called
+(define get-function-param-vals cddr)
+
+; Returns the parameter names for a function ex: length, width
+(define get-function-param-names
+  (lambda (name environment)
+    (car (lookup name environment))))
+
+; Returns the function body as stored in the environment
+(define get-function-body-environment
+  (lambda (name environment)
+    (cadr (lookup name environment))))
+
+
+; Returns the new environment with all parameters inserted into the top layer
+(define interpret-function-call-helper
+  (lambda (paramNames paramVals environment)
+    (cond ((null? paramNames) environment)
+          (else (interpret-function-call-helper (cdr paramNames) (cdr paramVals)
+                         (insert (car paramNames) (eval-expression (car paramVals) environment) environment))))))
+
+; Creates a frame that contains the function closure
+(define function-frame
+  (lambda (param-list body current-environment)
+    (list param-list body (append newframe current-environment))))
+
+    
+; Returns the name of the function 
+(define get-function-name cadr)
+
+; Returns the parameter signature of the function
+(define get-function-params caddr)
+
+; Returns the body of the function
+(define get-function-body cadddr)
+
+; Combines the parameter list and the body of a function into a list
+(define pack-function-definition
+  (lambda (param-list body)
+    (list param-list body)))
+
+; Interprets a function declaration
+(define interpret-function-declare
+  (lambda (statement environment)
+    (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
+                                                                    (get-function-body statement)))))
+
 
 ; Evaluate a binary (or unary) operator.  Although this is not dealing with side effects, I have the routine evaluate the left operand first and then
 ; pass the result to eval-binary-op2 to evaluate the right operand.  This forces the operands to be evaluated in the proper order in case you choose
@@ -243,32 +305,6 @@
 ; Returns an empty frame
 (define newframe
   '(() ()))
-
-; Creates a frame that contains the function closure
-(define function-frame
-  (lambda (param-list body current-environment)
-    (list param-list body (append newframe current-environment))))
-
-
-; Returns the name of the function 
-(define get-function-name cadr)
-
-; Returns the parameter signature of the function
-(define get-function-params caddr)
-
-; Returns the body of the function
-(define get-function-body cadddr)
-
-; Combines the parameter list and the body of a function into a list
-(define pack-function-definition
-  (lambda (param-list body)
-    (list param-list body)))
-
-; Interprets a function declaration
-(define interpret-function-declare
-  (lambda (statement environment)
-    (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
-                                                                    (get-function-body statement)))))
 
 
 ;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body))))
