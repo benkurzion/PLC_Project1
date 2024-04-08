@@ -193,6 +193,7 @@
 (define interpret-function-call-helper
   (lambda (paramNames paramVals environment throw)
     (cond ((null? paramNames) environment)
+          ((not (eq? (length paramNames) (length paramVals))) (myerror "Parameter Mismatch")) 
           (else (interpret-function-call-helper (cdr paramNames) (cdr paramVals)
                          (insert (car paramNames) (eval-expression (car paramVals) environment throw) environment) throw)))))
 
@@ -231,7 +232,7 @@
     (cond
       ((eq? '! (operator expr)) (not (eval-expression (operand1 expr) environment throw)))
       ((and (eq? '- (operator expr)) (= 2 (length expr))) (- (eval-expression (operand1 expr) environment throw)))
-      ((eq? 'funcall (operator expr)) (interpret-function-call expr environment null))
+      ((eq? 'funcall (operator expr)) (interpret-function-call expr environment throw))
       (else (eval-binary-op2 expr (eval-expression (operand1 expr) environment throw) environment throw)))))
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
