@@ -1,7 +1,6 @@
 ; If you are using scheme instead of racket, comment these two lines, uncomment the (load "simpleParser.scm") and comment the (require "simpleParser.rkt")
 #lang racket
-(require "simpleParser.rkt")
-; (load "simpleParser.scm")
+(require "functionParser.rkt")
 
 
 ; An interpreter for the simple language that uses call/cc for the continuations.  Does not handle side effects.
@@ -17,9 +16,16 @@
     (scheme->language
      (call/cc
       (lambda (return)
-        (interpret-statement-list (parser file) (newenvironment) return
+        (interpret-statement-list (add-call-to-main (parser file)) (newenvironment) return
                                   (lambda (env) (myerror "Break used outside of loop")) (lambda (env) (myerror "Continue used outside of loop"))
                                   (lambda (v env) (myerror "Uncaught exception thrown"))))))))
+
+
+; Takes a list of lists (the parse tree) and adds a call to main at the end
+(define add-call-to-main
+  (lambda (file)
+    (append file (list '(funcall main ())))))
+
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
 (define interpret-statement-list
@@ -86,7 +92,7 @@
 (define interpret-block
   (lambda (statement environment return break continue throw)
     (pop-frame (interpret-statement-list (cdr statement)
-                                         (environment)
+                                         environment
                                          return
                                          (lambda (env) (break (pop-frame env)))
                                          (lambda (env) (continue (pop-frame env)))
@@ -213,7 +219,7 @@
 (define interpret-function-declare
   (lambda (statement environment)
     (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
-                                                                    (get-function-body statement)))))
+                                                                    (get-function-body statement)) environment)))
 
 
 ; Evaluate a binary (or unary) operator.  Although this is not dealing with side effects, I have the routine evaluate the left operand first and then
@@ -304,7 +310,8 @@
 
 ; Returns an empty frame
 (define newframe
-  '(() ()))
+  (lambda ()
+  '(() ())))
 
 
 ;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body))))
@@ -344,6 +351,7 @@
 (define lookup
   (lambda (var environment)
     (lookup-variable var environment)))
+
   
 ; A helper function that does the lookup.  Returns an error if the variable does not have a legal value
 (define lookup-variable
