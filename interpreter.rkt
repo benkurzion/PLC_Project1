@@ -46,7 +46,7 @@
       ((eq? 'while (statement-type statement)) (interpret-while statement environment return throw useReturn))
       ((eq? 'continue (statement-type statement)) (continue environment))
       ((eq? 'break (statement-type statement)) (break environment))
-      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment) return break continue throw useReturn))
+      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment (get-ID (topframe environment)) null) return break continue throw useReturn))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw useReturn))
       ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment))
@@ -109,17 +109,17 @@
 (define create-throw-catch-continuation
   (lambda (catch-statement environment return break continue throw jump finally-block useReturn)
     (cond
-      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env) return break continue throw useReturn)))) 
+      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn)))) 
       ((not (eq? 'catch (statement-type catch-statement))) (myerror "Incorrect catch statement"))
       (else (lambda (ex env)
               (jump (interpret-block finally-block
                                      (push-frame (pop-frame (interpret-statement-list 
                                                  (get-body catch-statement) 
-                                                 (insert (catch-var catch-statement) ex (push-frame env))
+                                                 (insert (catch-var catch-statement) ex (push-frame env (get-ID (topframe environment)) null))
                                                  return 
                                                  (lambda (env2) (break (pop-frame env2))) 
                                                  (lambda (env2) (continue (pop-frame env2))) 
-                                                 (lambda (v env2) (throw v (pop-frame env2))) useReturn)))
+                                                 (lambda (v env2) (throw v (pop-frame env2))) useReturn)) (get-ID (topframe environment)) null)
                                      return break continue throw useReturn)))))))
 
 ; To interpret a try block, we must adjust  the return, break, continue continuations to interpret the finally block if any of them are used.
@@ -130,12 +130,12 @@
      (lambda (jump)
        (let* ((finally-block (make-finally-block (get-finally statement)))
               (try-block (make-try-block (get-try statement)))
-              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment) return break continue throw useReturn) (return v))))
-              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env) return break continue throw useReturn))))
-              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env) return break continue throw useReturn))))
+              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment (get-ID (topframe environment)) null) return break continue throw useReturn) (return v))))
+              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn))))
+              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn))))
               (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block useReturn)))
          (interpret-block finally-block
-                          (push-frame (interpret-block try-block (push-frame environment) new-return new-break new-continue new-throw useReturn))
+                          (push-frame (interpret-block try-block (push-frame environment (get-ID (topframe environment)) null) new-return new-break new-continue new-throw useReturn) (get-ID (topframe environment)) null)
                           return break continue throw useReturn))))))
 
 ; helper methods so that I can reuse the interpret-block method on the try and finally blocks
@@ -161,32 +161,26 @@
       
       (else (eval-operator expr environment throw)))))
 
-;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body))))
+
+
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
+
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
+
 
 
 (define interpret-function-call
   (lambda (statement environment throw useReturn)
     (call/cc (lambda (new-return) 
-               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment)
-                                                              (get-function-param-vals statement) (push-frame environment) throw useReturn))
+               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement)
+                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement) environment))
+                                                              throw useReturn))
                      (function-body (get-function-body-environment (get-function-name statement) environment))
                      (new-break (lambda (s) (error "Break out of loop")))
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
                  (interpret-statement-list function-body new-env new-return new-break new-continue throw (or useReturn (eq? 'main (get-function-name statement)))))))))
-
-; Returns the function parameters when the function is called
-(define get-function-param-vals cddr)
-
-; Returns the parameter names for a function ex: length, width
-(define get-function-param-names
-  (lambda (name environment)
-    (car (lookup name environment))))
-
-; Returns the function body as stored in the environment
-(define get-function-body-environment
-  (lambda (name environment)
-    (cadr (lookup name environment))))
-
 
 ; Returns the new environment with all parameters inserted into the top layer
 (define interpret-function-call-helper
@@ -196,11 +190,23 @@
           (else (interpret-function-call-helper (cdr paramNames) (cdr paramVals)
                          (insert (car paramNames) (eval-expression (car paramVals) environment throw) environment) throw useReturn)))))
 
-; Creates a frame that contains the function closure
-(define function-frame
-  (lambda (param-list body current-environment)
-    (list param-list body (append newframe current-environment))))
+; Returns the function parameters when the function is called
+(define get-function-param-vals cddr)
 
+; Returns the parameter names for a function (ex: length, width)
+(define get-function-param-names
+  (lambda (name environment)
+    (car (lookup name environment))))
+
+; Returns the function body as stored in the environment
+(define get-function-body-environment
+  (lambda (name environment)
+    (cadr (lookup name environment))))
+
+; Get the name of the static link for a function
+(define get-function-link
+  (lambda (name environment)
+    (caddr (lookup name environment))))
     
 ; Returns the name of the function 
 (define get-function-name cadr)
@@ -213,15 +219,28 @@
 
 ; Combines the parameter list and the body of a function into a list
 (define pack-function-definition
-  (lambda (param-list body)
-    (list param-list body)))
+  (lambda (param-list body static-link)
+    (list param-list body static-link)))
+
+
+
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
+
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
+
+
 
 ; Interprets a function declaration
 (define interpret-function-declare
   (lambda (statement environment)
     (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
-                                                                    (get-function-body statement)) environment)))
+                                           (get-function-body statement) (get-ID (topframe environment)))
+            environment)))
 
+; Returns the identifier for a layer in the evironment 
+(define get-ID caddr)
 
 ; Evaluate a binary (or unary) operator.  Although this is not dealing with side effects, I have the routine evaluate the left operand first and then
 ; pass the result to eval-binary-op2 to evaluate the right operand.  This forces the operands to be evaluated in the proper order in case you choose
@@ -308,21 +327,24 @@
 ; create a new empty environment
 (define newenvironment
   (lambda ()
-    (list (newframe))))
+    (list (newframe 'global null))))
 
 ; Returns an empty frame
 (define newframe
-  (lambda ()
-  '(() ())))
+  (lambda (id link)
+  (list '() '() id link)))
 
 
-;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body name-static-link))))
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
 
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
 
 ; add a frame onto the top of the environment
 (define push-frame
-  (lambda (environment)
-    (cons (newframe) environment)))
+  (lambda (environment id link)
+    (cons (newframe id link) environment)))
 
 ; remove a frame from the environment
 (define pop-frame
@@ -354,22 +376,32 @@
   (lambda (var environment)
     (lookup-variable var environment)))
 
-  
+;Get the link of the frame
+(define get-link cadddr)
+
+; Gets the frame (& following frames) that the static link points to
+(define get-env-static-link
+  (lambda (link environment)
+    (cond ((null? environment) null)
+          ((eq? (get-ID (topframe environment)) link) environment)
+          (else (get-env-static-link link (cdr environment))))))
+
 ; A helper function that does the lookup.  Returns an error if the variable does not have a legal value
 (define lookup-variable
   (lambda (var environment)
-    (let ((value (lookup-in-env var environment)))
+    (let ((value (lookup-in-env var environment (get-link (topframe environment)))))
       (if (eq? 'novalue value)
           (myerror "error: variable without an assigned value:" var)
           value))))
 
 ; Return the value bound to a variable in the environment
 (define lookup-in-env
-  (lambda (var environment)
+  (lambda (var environment link)
     (cond
-      ((null? environment) (myerror "error: undefined variable" var))
       ((exists-in-list? var (variables (topframe environment))) (lookup-in-frame var (topframe environment)))
-      (else (lookup-in-env var (cdr environment))))))
+      ((null? (cdr environment)) (myerror "error: undefined variable" var))
+      ((eq? link null) (lookup-in-env var (cdr environment) (get-link (topframe (cdr environment))))) ;use dynamic link for blocks
+      (else (lookup-in-env var (get-env-static-link link environment) (get-link (topframe (get-env-static-link link environment)))))))) ; use static link
 
 ; Return the value bound to a variable in the frame
 (define lookup-in-frame
@@ -410,7 +442,7 @@
 ; Add a new variable/value pair to the frame.
 (define add-to-frame
   (lambda (var val frame)
-    (list (cons var (variables frame)) (cons (scheme->language val) (store frame)))))
+    (list (cons var (variables frame)) (cons (scheme->language val) (store frame)) (get-ID frame) (get-link frame))))
 
 ; Changes the binding of a variable in the environment to a new value
 (define update-existing
@@ -422,7 +454,7 @@
 ; Changes the binding of a variable in the frame to a new value.
 (define update-in-frame
   (lambda (var val frame)
-    (list (variables frame) (update-in-frame-store var val (variables frame) (store frame)))))
+    (list (variables frame) (update-in-frame-store var val (variables frame) (store frame)) (get-ID frame) (get-link frame))))
 
 ; Changes a variable binding by placing the new value in the appropriate place in the store
 (define update-in-frame-store
@@ -470,4 +502,3 @@
                             str
                             (makestr (string-append str (string-append " " (symbol->string (car vals)))) (cdr vals))))))
       (error-break (display (string-append str (makestr "" vals)))))))
-
