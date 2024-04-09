@@ -18,7 +18,7 @@
       (lambda (return)
         (interpret-statement-list (add-call-to-main (parser file)) (newenvironment) return
                                   (lambda (env) (myerror "Break used outside of loop")) (lambda (env) (myerror "Continue used outside of loop"))
-                                  (lambda (v env) (myerror "Uncaught exception thrown"))))))))
+                                  (lambda (v env) (myerror "Uncaught exception thrown")) #f))))))
 
 
 ; Takes a list of lists (the parse tree) and adds a call to main at the end
@@ -29,33 +29,36 @@
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
 (define interpret-statement-list
-  (lambda (statement-list environment return break continue throw)
+  (lambda (statement-list environment return break continue throw useReturn)
     (if (null? statement-list)
         environment
-        (interpret-statement-list (cdr statement-list) (interpret-statement (car statement-list) environment return break continue throw) return break continue throw))))
+        (interpret-statement-list (cdr statement-list) (interpret-statement (car statement-list) environment return break continue throw useReturn) return break
+                                  continue throw useReturn))))
 
 ; interpret a statement in the environment with continuations for return, break, continue, throw
 (define interpret-statement
-  (lambda (statement environment return break continue throw)
+  (lambda (statement environment return break continue throw useReturn)
     (cond
-      ((eq? 'return (statement-type statement)) (interpret-return statement environment return throw))
+      ((eq? 'return (statement-type statement)) (interpret-return statement environment return throw useReturn))
       ((eq? 'var (statement-type statement)) (interpret-declare statement environment throw))
       ((eq? '= (statement-type statement)) (interpret-assign statement environment throw))
-      ((eq? 'if (statement-type statement)) (interpret-if statement environment return break continue throw))
-      ((eq? 'while (statement-type statement)) (interpret-while statement environment return throw))
+      ((eq? 'if (statement-type statement)) (interpret-if statement environment return break continue throw useReturn))
+      ((eq? 'while (statement-type statement)) (interpret-while statement environment return throw useReturn))
       ((eq? 'continue (statement-type statement)) (continue environment))
       ((eq? 'break (statement-type statement)) (break environment))
-      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment) return break continue throw))
+      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment (get-ID (topframe environment)) null) return break continue throw useReturn))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
-      ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw))
+      ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw useReturn))
       ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment))
-      ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment throw))
+      ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment throw #f))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 ; Calls the return continuation with the given expression value
 (define interpret-return
-  (lambda (statement environment return throw)
-    (return (eval-expression (get-expr statement) environment throw))))
+  (lambda (statement environment return throw useReturn)
+    (if useReturn
+        (return (eval-expression (get-expr statement) environment throw))
+        environment)))
 
 ; Adds a new variable binding to the environment.  There may be an assignment with the variable
 (define interpret-declare
@@ -71,32 +74,28 @@
 
 ; We need to check if there is an else condition.  Otherwise, we evaluate the expression and do the right thing.
 (define interpret-if
-  (lambda (statement environment return break continue throw)
+  (lambda (statement environment return break continue throw useReturn)
     (cond
-      ((eval-expression (get-condition statement) environment throw) (interpret-statement (get-then statement) environment return break continue throw))
-      ((exists-else? statement) (interpret-statement (get-else statement) environment return break continue throw))
+      ((eval-expression (get-condition statement) environment throw) (interpret-statement (get-then statement) environment return break continue throw useReturn))
+      ((exists-else? statement) (interpret-statement (get-else statement) environment return break continue throw useReturn))
       (else environment))))
 
 ; Interprets a while loop.  We must create break and continue continuations for this loop
 (define interpret-while
-  (lambda (statement environment return throw)
+  (lambda (statement environment return throw useReturn)
     (call/cc
      (lambda (break)
        (letrec ((loop (lambda (condition body environment)
                         (if (eval-expression condition environment throw)
-                            (loop condition body (interpret-statement body environment return break (lambda (env) (break (loop condition body env))) throw))
+                            (loop condition body (interpret-statement body environment return break (lambda (env) (break (loop condition body env))) throw useReturn))
                          environment))))
          (loop (get-condition statement) (get-body statement) environment))))))
 
 ; Interprets a block.  The break, continue, and throw continuations must be adjusted to pop the environment
 (define interpret-block
-  (lambda (statement environment return break continue throw)
-    (pop-frame (interpret-statement-list (cdr statement)
-                                         environment
-                                         return
-                                         (lambda (env) (break (pop-frame env)))
-                                         (lambda (env) (continue (pop-frame env)))
-                                         (lambda (v env) (throw v (pop-frame env)))))))
+  (lambda (statement environment return break continue throw useReturn)
+    (pop-frame (interpret-statement-list (cdr statement) environment return (lambda (env) (break (pop-frame env))) (lambda (env) (continue (pop-frame env)))
+                                         (lambda (v env) (throw v (pop-frame env))) useReturn))))
 
 ; We use a continuation to throw the proper value. Because we are not using boxes, the environment/state must be thrown as well so any environment changes will be kept
 (define interpret-throw
@@ -108,36 +107,36 @@
 ; Create a continuation for the throw.  If there is no catch, it has to interpret the finally block, and once that completes throw the exception.
 ;   Otherwise, it interprets the catch block with the exception bound to the thrown value and interprets the finally block when the catch is done
 (define create-throw-catch-continuation
-  (lambda (catch-statement environment return break continue throw jump finally-block)
+  (lambda (catch-statement environment return break continue throw jump finally-block useReturn)
     (cond
-      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env) return break continue throw)))) 
+      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn)))) 
       ((not (eq? 'catch (statement-type catch-statement))) (myerror "Incorrect catch statement"))
       (else (lambda (ex env)
               (jump (interpret-block finally-block
                                      (push-frame (pop-frame (interpret-statement-list 
                                                  (get-body catch-statement) 
-                                                 (insert (catch-var catch-statement) ex (push-frame env))
+                                                 (insert (catch-var catch-statement) ex (push-frame env (get-ID (topframe environment)) null))
                                                  return 
                                                  (lambda (env2) (break (pop-frame env2))) 
                                                  (lambda (env2) (continue (pop-frame env2))) 
-                                                 (lambda (v env2) (throw v (pop-frame env2))))))
-                                     return break continue throw)))))))
+                                                 (lambda (v env2) (throw v (pop-frame env2))) useReturn)) (get-ID (topframe environment)) null)
+                                     return break continue throw useReturn)))))))
 
 ; To interpret a try block, we must adjust  the return, break, continue continuations to interpret the finally block if any of them are used.
 ;  We must create a new throw continuation and then interpret the try block with the new continuations followed by the finally block with the old continuations
 (define interpret-try
-  (lambda (statement environment return break continue throw)
+  (lambda (statement environment return break continue throw useReturn)
     (call/cc
      (lambda (jump)
        (let* ((finally-block (make-finally-block (get-finally statement)))
               (try-block (make-try-block (get-try statement)))
-              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment) return break continue throw) (return v))))
-              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env) return break continue throw))))
-              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env) return break continue throw))))
-              (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block)))
+              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment (get-ID (topframe environment)) null) return break continue throw useReturn) (return v))))
+              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn))))
+              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn))))
+              (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block useReturn)))
          (interpret-block finally-block
-                          (push-frame (interpret-block try-block (push-frame environment) new-return new-break new-continue new-throw))
-                          return break continue throw))))))
+                          (push-frame (interpret-block try-block (push-frame environment (get-ID (topframe environment)) null) new-return new-break new-continue new-throw useReturn) (get-ID (topframe environment)) null)
+                          return break continue throw useReturn))))))
 
 ; helper methods so that I can reuse the interpret-block method on the try and finally blocks
 (define make-try-block
@@ -162,21 +161,34 @@
       
       (else (eval-operator expr environment throw)))))
 
-;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body))))
+
+
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
+
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
+
 
 
 (define interpret-function-call
-  (lambda (statement environment throw)
+  (lambda (statement environment throw useReturn)
     (call/cc (lambda (new-return) 
-               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment)
-                                                              (get-function-param-vals statement) (push-frame environment) throw))
+               (let ((new-env (pack-env-links (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment)
+                                              (get-function-param-vals statement) (push-frame environment (get-ID (topframe environment)) null) throw useReturn)
+                                              (get-function-name statement) (get-function-link (get-function-name statement) environment)))
                      (function-body (get-function-body-environment (get-function-name statement) environment))
                      (new-break (lambda (s) (error "Break out of loop")))
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
-                 (interpret-statement-list function-body new-env new-return new-break new-continue throw))))))
-                                                      
+                 (interpret-statement-list function-body new-env new-return new-break new-continue throw (or useReturn (eq? 'main (get-function-name statement)))))))))
+
 ; Returns the function parameters when the function is called
 (define get-function-param-vals cddr)
+
+; Returns a new list of '(currentFrame functionID functionLink)
+(define pack-env-links
+  (lambda (frame id static-link)
+    (append frame (list id static-link))))
 
 ; Returns the parameter names for a function ex: length, width
 (define get-function-param-names
@@ -188,19 +200,19 @@
   (lambda (name environment)
     (cadr (lookup name environment))))
 
+; Get the name of the static link for a function
+(define get-function-link
+  (lambda (name environment)
+    ((caddr (lookup name environment)))))
+
 
 ; Returns the new environment with all parameters inserted into the top layer
 (define interpret-function-call-helper
-  (lambda (paramNames paramVals environment throw)
+  (lambda (paramNames paramVals environment throw useReturn)
     (cond ((null? paramNames) environment)
           ((not (eq? (length paramNames) (length paramVals))) (myerror "Parameter Mismatch")) 
           (else (interpret-function-call-helper (cdr paramNames) (cdr paramVals)
-                         (insert (car paramNames) (eval-expression (car paramVals) environment throw) environment) throw)))))
-
-; Creates a frame that contains the function closure
-(define function-frame
-  (lambda (param-list body current-environment)
-    (list param-list body (append newframe current-environment))))
+                         (insert (car paramNames) (eval-expression (car paramVals) environment throw) environment) throw useReturn)))))
 
     
 ; Returns the name of the function 
@@ -214,15 +226,28 @@
 
 ; Combines the parameter list and the body of a function into a list
 (define pack-function-definition
-  (lambda (param-list body)
-    (list param-list body)))
+  (lambda (param-list body static-link)
+    (list param-list body static-link)))
+
+
+
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
+
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
+
+
 
 ; Interprets a function declaration
 (define interpret-function-declare
   (lambda (statement environment)
     (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
-                                                                    (get-function-body statement)) environment)))
+                                                                    (get-function-body statement) (get-ID (topframe environment)))
+            environment)))
 
+; Returns the identifier for the top layer in the evironment 
+(define get-ID caddr)
 
 ; Evaluate a binary (or unary) operator.  Although this is not dealing with side effects, I have the routine evaluate the left operand first and then
 ; pass the result to eval-binary-op2 to evaluate the right operand.  This forces the operands to be evaluated in the proper order in case you choose
@@ -232,7 +257,7 @@
     (cond
       ((eq? '! (operator expr)) (not (eval-expression (operand1 expr) environment throw)))
       ((and (eq? '- (operator expr)) (= 2 (length expr))) (- (eval-expression (operand1 expr) environment throw)))
-      ((eq? 'funcall (operator expr)) (interpret-function-call expr environment throw))
+      ((eq? 'funcall (operator expr)) (interpret-function-call expr environment throw #t))
       (else (eval-binary-op2 expr (eval-expression (operand1 expr) environment throw) environment throw)))))
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
@@ -309,21 +334,24 @@
 ; create a new empty environment
 (define newenvironment
   (lambda ()
-    (list (newframe))))
+    (list (newframe global null))))
 
 ; Returns an empty frame
 (define newframe
-  (lambda ()
-  '(() ())))
+  (lambda (id link)
+  (list '() '() id link)))
 
 
-;;; THE STATE: '(((length width v) (10 15 7)) ((x y split) (2 3 ((length width) body name-static-link))))
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
 
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
 
 ; add a frame onto the top of the environment
 (define push-frame
-  (lambda (environment)
-    (cons (newframe) environment)))
+  (lambda (environment id link)
+    (cons (newframe id link) environment)))
 
 ; remove a frame from the environment
 (define pop-frame
@@ -355,22 +383,32 @@
   (lambda (var environment)
     (lookup-variable var environment)))
 
-  
+;Get the link of the frame
+(define get-link cadddr)
+
+; Gets the frame (& following frames) that the static link points to
+(define get-env-of-static-link
+  (lambda (link environment)
+    (cond ((null? environment) 'null)
+          ((eq? (get-ID (topframe environment)) link) environment)
+          (else (get-env-of-static-link (cdr environment))))))
+
 ; A helper function that does the lookup.  Returns an error if the variable does not have a legal value
 (define lookup-variable
   (lambda (var environment)
-    (let ((value (lookup-in-env var environment)))
+    (let ((value (lookup-in-env var environment (get-link (topframe environment)))))
       (if (eq? 'novalue value)
           (myerror "error: variable without an assigned value:" var)
           value))))
 
 ; Return the value bound to a variable in the environment
 (define lookup-in-env
-  (lambda (var environment)
+  (lambda (var environment link)
     (cond
       ((null? environment) (myerror "error: undefined variable" var))
       ((exists-in-list? var (variables (topframe environment))) (lookup-in-frame var (topframe environment)))
-      (else (lookup-in-env var (cdr environment))))))
+      ((eq? link 'null) (lookup-in-env var (cdr environment) (get-link (cdr environment)))) ;use dynamic link for blocks
+      (else (lookup-in-env var (get-env-static-link link evironment) link))))) ; use static link
 
 ; Return the value bound to a variable in the frame
 (define lookup-in-frame
@@ -471,4 +509,3 @@
                             str
                             (makestr (string-append str (string-append " " (symbol->string (car vals)))) (cdr vals))))))
       (error-break (display (string-append str (makestr "" vals)))))))
-
