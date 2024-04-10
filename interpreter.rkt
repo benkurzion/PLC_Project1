@@ -20,7 +20,6 @@
                                   (lambda (env) (myerror "Break used outside of loop")) (lambda (env) (myerror "Continue used outside of loop"))
                                   (lambda (v env) (myerror "Uncaught exception thrown")) #f))))))
 
-
 ; Takes a list of lists (the parse tree) and adds a call to main at the end
 (define add-call-to-main
   (lambda (file)
@@ -46,7 +45,8 @@
       ((eq? 'while (statement-type statement)) (interpret-while statement environment return throw useReturn))
       ((eq? 'continue (statement-type statement)) (continue environment))
       ((eq? 'break (statement-type statement)) (break environment))
-      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment (get-ID (topframe environment)) null) return break continue throw useReturn))
+      ((eq? 'begin (statement-type statement)) (interpret-block statement (push-frame environment (get-ID (topframe environment)) null) return break continue
+                                                                throw useReturn))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw useReturn))
       ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment))
@@ -109,7 +109,8 @@
 (define create-throw-catch-continuation
   (lambda (catch-statement environment return break continue throw jump finally-block useReturn)
     (cond
-      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn)))) 
+      ((null? catch-statement) (lambda (ex env) (throw ex (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue
+                                                                           throw useReturn)))) 
       ((not (eq? 'catch (statement-type catch-statement))) (myerror "Incorrect catch statement"))
       (else (lambda (ex env)
               (jump (interpret-block finally-block
@@ -130,12 +131,16 @@
      (lambda (jump)
        (let* ((finally-block (make-finally-block (get-finally statement)))
               (try-block (make-try-block (get-try statement)))
-              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment (get-ID (topframe environment)) null) return break continue throw useReturn) (return v))))
-              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn))))
-              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw useReturn))))
+              (new-return (lambda (v) (begin (interpret-block finally-block (push-frame environment (get-ID (topframe environment)) null) return break continue
+                                                              throw useReturn) (return v))))
+              (new-break (lambda (env) (break (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue throw
+                                                               useReturn))))
+              (new-continue (lambda (env) (continue (interpret-block finally-block (push-frame env (get-ID (topframe environment)) null) return break continue
+                                                                     throw useReturn))))
               (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block useReturn)))
          (interpret-block finally-block
-                          (push-frame (interpret-block try-block (push-frame environment (get-ID (topframe environment)) null) new-return new-break new-continue new-throw useReturn) (get-ID (topframe environment)) null)
+                          (push-frame (interpret-block try-block (push-frame environment (get-ID (topframe environment)) null) new-return new-break new-continue
+                                                       new-throw useReturn) (get-ID (topframe environment)) null)
                           return break continue throw useReturn))))))
 
 ; helper methods so that I can reuse the interpret-block method on the try and finally blocks
@@ -161,21 +166,13 @@
       
       (else (eval-operator expr environment throw)))))
 
-
-
-;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
-;; --> id for global frame is global and link for global frame is null
-
-;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
-;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
-
-
-
+; Interprets a call to a function and produces the return value/updated environment
 (define interpret-function-call
   (lambda (statement environment throw useReturn)
     (call/cc (lambda (new-return) 
                (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement)
-                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement) environment))
+                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement)
+                                                                                                                                       environment))
                                                               throw useReturn))
                      (function-body (get-function-body-environment (get-function-name statement) environment))
                      (new-break (lambda (s) (error "Break out of loop")))
@@ -188,7 +185,7 @@
     (cond ((null? paramNames) environment)
           ((not (eq? (length paramNames) (length paramVals))) (myerror "Parameter Mismatch")) 
           (else (interpret-function-call-helper (cdr paramNames) (cdr paramVals)
-                         (insert (car paramNames) (eval-expression (car paramVals) environment throw) environment) throw useReturn)))))
+                         (insert (car paramNames) (eval-expression (car paramVals) (pop-frame environment) throw) environment) throw useReturn)))))
 
 ; Returns the function parameters when the function is called
 (define get-function-param-vals cddr)
@@ -221,16 +218,6 @@
 (define pack-function-definition
   (lambda (param-list body static-link)
     (list param-list body static-link)))
-
-
-
-;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
-;; --> id for global frame is global and link for global frame is null
-
-;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
-;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
-
-
 
 ; Interprets a function declaration
 (define interpret-function-declare
@@ -323,6 +310,11 @@
 ;------------------------
 ; Environment/State Functions
 ;------------------------
+;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
+;; --> id for global frame is global and link for global frame is null
+
+;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
+;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
 
 ; create a new empty environment
 (define newenvironment
@@ -333,13 +325,6 @@
 (define newframe
   (lambda (id link)
   (list '() '() id link)))
-
-
-;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
-;; --> id for global frame is global and link for global frame is null
-
-;;; Function call frame for func1: '( (param1 param2 func3 ...) (val1 val2 (paramlist3 body3 func1) ... ) func1 global)
-;;; Function call frame for func3: '( (param1 param2 ...) (val1 val2 ...) func3 func1)
 
 ; add a frame onto the top of the environment
 (define push-frame
