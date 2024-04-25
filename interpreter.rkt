@@ -1,6 +1,6 @@
 ; If you are using scheme instead of racket, comment these two lines, uncomment the (load "simpleParser.scm") and comment the (require "simpleParser.rkt")
 #lang racket
-(require "functionParser.rkt")
+(require "classParser.rkt")
 
 
 ; An interpreter for the simple language that uses call/cc for the continuations.  Does not handle side effects.
@@ -12,7 +12,7 @@
 
 ; The main function.  Calls parser to get the parse tree and interprets it with a new environment.  The returned value is in the environment.
 (define interpret
-  (lambda (file)
+  (lambda (file classname)
     (scheme->language
      (call/cc
       (lambda (return)
@@ -51,7 +51,39 @@
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw useReturn))
       ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment))
       ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment throw #f))
+      ((eq? 'class (statement-type statement)) (interpret-class-definition statement environment return break continue throw useReturn))
       (else (myerror "Unknown statement:" (statement-type statement))))))
+
+
+;; class has:  (instance variable names and method names) (instance variable values/expr and method closures) classID (super's closure)
+;; '((A B) (((y x main) (10 5 (main closure)) A superID) B-info) global null)
+
+
+;Interprets a class definition
+(define interpret-class-definition
+  (lambda (statement environment return break continue throw useReturn)
+    (insert (get-class-name statement) (topframe (interpret-statement-list (get-class-body statement)
+            (push-frame environment (get-class-name statement) (get-class-superID statement)) return break continue throw useReturn)) environment)))
+    
+;Returns the class' super
+(define get-class-superID
+  (lambda (statement)
+    (cadr (caddr statement))))
+
+;Returns the class body
+(define get-class-body cadddr)
+; Returns the name of the class when it is defined
+(define get-class-name cadr)
+
+; Returns the ID of a class frame in the environment
+(define get-class-ID caddr)
+
+(define get-closure
+  (lambda (classID environment)
+    (cond ((null? environment) (myerror "Classes defined out of order"))
+          ((eq? classID (get-class-ID (car environment))) (car environment))
+          (else (get-closure classID (cdr environment))))))
+
 
 ; Calls the return continuation with the given expression value
 (define interpret-return
@@ -310,6 +342,17 @@
 ;------------------------
 ; Environment/State Functions
 ;------------------------
+
+;; class has:  (instance variable names and method names) (instance variable values/expr and method closures) classID (super's closure)
+;;                                                       constructors count as methods
+
+;; object / instance has : (instance variable names) (instance variable values) runtime-type-closure
+
+;; function defintion closure: (parameter-list body link classID) -- classID for the containing class
+
+;; function call has: ( (vars and nested functions) (vals and nested function closures) functionID static-link)
+
+
 ;;; The global frame: '( (var1 var2 ... func1 func2 ...) (val1 val2 ... (paramlist1 body1 global) (paramlist2 body2 global) ...) global null)
 ;; --> id for global frame is global and link for global frame is null
 
