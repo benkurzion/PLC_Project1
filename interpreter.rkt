@@ -56,33 +56,50 @@
 
 
 ;; class has:  (instance variable names and method names) (instance variable values/expr and method closures) classID (super's closure)
-;; '((A B) (((y x main) (10 5 (main closure)) A superID) B-info) global null)
+'((A B) (((y x main) (10 5 (main closure)) A superID) B-info) global null)
 
+
+;; for a object var obj = new B()
+;; store obj in varList and      (copy of B's closure) in valList
+;; such that if we ever call obj.method()
+;; we look through B's closure and then all superclasses thereon until we hit null
+
+(define interpret-object-creation
+  (lambda (expr environment throw)
+    (get-closure (cadr expr) environment)))
 
 ;Interprets a class definition
 (define interpret-class-definition
   (lambda (statement environment return break continue throw useReturn)
-    (insert (get-class-name statement) (topframe (interpret-statement-list (get-class-body statement)
-            (push-frame environment (get-class-name statement) (get-class-superID statement)) return break continue throw useReturn)) environment)))
+    (insert (get-class-def-name statement) (topframe (interpret-statement-list (get-class-body statement)
+            (push-frame environment (get-class-def-name statement) (get-class-superID statement)) return break continue throw useReturn)) environment)))
     
 ;Returns the class' super
 (define get-class-superID
   (lambda (statement)
-    (cadr (caddr statement))))
+    (cond ((null? (caddr statement)) 'global)
+    (else (cadr (caddr statement))))))
 
 ;Returns the class body
 (define get-class-body cadddr)
+
 ; Returns the name of the class when it is defined
-(define get-class-name cadr)
+(define get-class-def-name cadr)
 
 ; Returns the ID of a class frame in the environment
 (define get-class-ID caddr)
 
+; Returns a class closure from the environment
 (define get-closure
   (lambda (classID environment)
-    (cond ((null? environment) (myerror "Classes defined out of order"))
-          ((eq? classID (get-class-ID (car environment))) (car environment))
-          (else (get-closure classID (cdr environment))))))
+    (lookup classID environment)))
+
+;Returns the state frame with a 'global link
+(define get-global-frame
+  (lambda (environment)
+    (cond ((null? environment) (myerror "Reached the end of environment while parsing"))
+          ((eq? 'global (get-class-ID (car environment))) (car environment))
+          (else (get-global-frame (cdr environment))))))
 
 
 ; Calls the return continuation with the given expression value
@@ -195,7 +212,6 @@
       ((eq? expr 'true) #t)
       ((eq? expr 'false) #f)
       ((not (list? expr)) (lookup expr environment))
-      
       (else (eval-operator expr environment throw)))))
 
 ; Interprets a call to a function and produces the return value/updated environment
@@ -270,6 +286,7 @@
       ((eq? '! (operator expr)) (not (eval-expression (operand1 expr) environment throw)))
       ((and (eq? '- (operator expr)) (= 2 (length expr))) (- (eval-expression (operand1 expr) environment throw)))
       ((eq? 'funcall (operator expr)) (interpret-function-call expr environment throw #t))
+      ((eq? 'new (operator expr)) (interpret-object-creation expr environment throw))
       (else (eval-binary-op2 expr (eval-expression (operand1 expr) environment throw) environment throw)))))
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
@@ -289,6 +306,7 @@
       ((eq? '>= (operator expr)) (>= op1value (eval-expression (operand2 expr) environment throw)))
       ((eq? '|| (operator expr)) (or op1value (eval-expression (operand2 expr) environment throw)))
       ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment throw)))
+      ((eq? 'dot (operator expr)) (interpret-dot (eval-expression op1value environment throw) (eval-expression (operand2 expr) environment throw)))
       (else (myerror "Unknown operator:" (operator expr))))))
 
 ; Determines if two values are equal.  We need a special test because there are both boolean and integer types.
