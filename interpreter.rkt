@@ -55,8 +55,8 @@
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 
-;; class has:  (instance variable names and method names) (instance variable values/expr and method closures) classID (super's closure)
-'((A B) (((y x main) (10 5 (main closure)) A superID) B-info) global null)
+;; class has:  (instance variable names and method names) (instance variable values/expr and method closures) classID (super's ID)
+; '((A B) (((y x main) (10 5 (main closure)) A superID) B-info) global null)
 
 
 ;; for a object var obj = new B()
@@ -66,7 +66,7 @@
 
 (define interpret-object-creation
   (lambda (expr environment throw)
-    (get-closure (cadr expr) environment)))
+    (get-class-closure (get-class-def-name expr) environment)))
 
 ;Interprets a class definition
 (define interpret-class-definition
@@ -89,8 +89,26 @@
 ; Returns the ID of a class frame in the environment
 (define get-class-ID caddr)
 
+; Returns a pair of lists that contain the closure for an object's runtime type
+; and all of the other classes that are higher in the inheritance (B extends A)
+; closure in form of '( (class names) (class closures) classID link)
+; Lets say that B extends A, C extends B.
+; We have an object c = new C();
+; now, we can access methods in classes A, B, and C from object c
+; so we need to store all the methods for A, B, and C in the closure for object c
+; closure of object c = ( (Same for A) ((B's var/methods) (B's valList) B A) ((C's var/methods) (C's valList) C B))
+(define get-obj-closure
+  (lambda (classID environment)
+    (get-obj-closure-helper classID environment '())))
+
+; Helper to find the closure for an object. Written in accumulator passing style
+(define get-obj-closure-helper
+  (lambda (classID environment closure)
+    (cond ((eq? classID 'global) closure)
+          (else (get-obj-closure-helper (get-link (get-class-closure classID)) environment (append closure (list (get-class-closure classID environment))))))))
+    
 ; Returns a class closure from the environment
-(define get-closure
+(define get-class-closure
   (lambda (classID environment)
     (lookup classID environment)))
 
@@ -308,6 +326,13 @@
       ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment throw)))
       ((eq? 'dot (operator expr)) (interpret-dot (eval-expression op1value environment throw) (eval-expression (operand2 expr) environment throw)))
       (else (myerror "Unknown operator:" (operator expr))))))
+
+
+; Interprets the dot operator and returns the field/method closure that the dot is referencing
+(define interpret-dot
+  (lambda (obj construct environment throw)
+    (lookup construct (lookup obj environment))))
+
 
 ; Determines if two values are equal.  We need a special test because there are both boolean and integer types.
 (define isequal
