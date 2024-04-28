@@ -16,14 +16,9 @@
     (scheme->language
      (call/cc
       (lambda (return)
-        (interpret-statement-list (add-call-to-main (parser file)) (newenvironment) return
+        (interpret-statement-list (parser file) (newenvironment) return
                                   (lambda (env) (myerror "Break used outside of loop")) (lambda (env) (myerror "Continue used outside of loop"))
                                   (lambda (v env) (myerror "Uncaught exception thrown")) #f))))))
-
-; Takes a list of lists (the parse tree) and adds a call to main at the end
-(define add-call-to-main
-  (lambda (file)
-    (append file (list '(funcall main ())))))
 
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
@@ -49,7 +44,7 @@
                                                                 throw useReturn))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw useReturn))
-      ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment))
+      ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment throw))
       ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment throw #f))
       ((eq? 'class (statement-type statement)) (interpret-class-definition statement environment return break continue throw useReturn))
       (else (myerror "Unknown statement:" (statement-type statement))))))
@@ -60,13 +55,13 @@
 
 
 ;; for a object var obj = new B()
-;; store obj in varList and      (copy of B's closure) in valList
+;; store 'obj in varList and      (copy of B's closure) in valList
 ;; such that if we ever call obj.method()
 ;; we look through B's closure and then all superclasses thereon until we hit null
-
+;; upon an object being created, we set the 'this variable to this new object
 (define interpret-object-creation
   (lambda (expr environment throw)
-    (get-class-closure (get-class-def-name expr) environment)))
+    (get-obj-closure (get-class-def-name expr) environment)))
 
 ;Interprets a class definition
 (define interpret-class-definition
@@ -135,9 +130,12 @@
         (insert (get-declare-var statement) 'novalue environment))))
 
 ; Updates the environment to add an new binding for a variable
+; first condition interprets a (dot a x)
+; second condition interprets anything else
 (define interpret-assign
   (lambda (statement environment throw)
-    (update (get-assign-lhs statement) (eval-expression (get-assign-rhs statement) environment throw) environment)))
+    (cond ((list? (get-assign-lhs statement)) (update (operand2 (get-assign-lhs statement)) (get-assign-rhs statement) (operand1 (get-assign-lhs statement))))
+          (else (update (get-assign-lhs statement) (eval-expression (get-assign-rhs statement) environment throw) environment)))))
 
 ; We need to check if there is an else condition.  Otherwise, we evaluate the expression and do the right thing.
 (define interpret-if
@@ -232,18 +230,33 @@
       ((not (list? expr)) (lookup expr environment))
       (else (eval-operator expr environment throw)))))
 
-; Interprets a call to a function and produces the return value/updated environment
+; Interprets a call to a function and produces the return value/ updated environment
 (define interpret-function-call
   (lambda (statement environment throw useReturn)
     (call/cc (lambda (new-return) 
-               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement)
+               (cond ((list? (get-function-name statement))
+                      (let* ((function-closure (eval-expression (get-function-name statement) environment throw))
+                             (new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement function-closure)
+                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement)
+                                                                                                                                       environment))
+                                                              throw useReturn))
+                     (new-break (lambda (s) (error "Break out of loop")))
+                     (new-continue (lambda (s) (error "Continue used outside of loop"))))
+                 (interpret-statement-list (cadr function-closure) new-env new-return new-break new-continue throw (or useReturn (eq? 'main (get-function-name statement))))))
+                     (else
+                      (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement (if (eq? 'main (get-function-name statement))
+                                                                                                                                                                                 null
+                                                                                                                                                                                 (lookup 'this environment))))
                                                               (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement)
                                                                                                                                        environment))
                                                               throw useReturn))
                      (function-body (get-function-body-environment (get-function-name statement) environment))
                      (new-break (lambda (s) (error "Break out of loop")))
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
-                 (interpret-statement-list function-body new-env new-return new-break new-continue throw (or useReturn (eq? 'main (get-function-name statement)))))))))
+                 (interpret-statement-list function-body new-env new-return new-break new-continue throw useReturn)))))))
+
+
+
 
 ; Returns the new environment with all parameters inserted into the top layer
 (define interpret-function-call-helper
@@ -254,12 +267,14 @@
                          (insert (car paramNames) (eval-expression (car paramVals) (pop-frame environment) throw) environment) throw useReturn)))))
 
 ; Returns the function parameters when the function is called
-(define get-function-param-vals cddr)
+(define get-function-param-vals
+  (lambda (statement this)
+    (cons this (cddr statement))))
 
-; Returns the parameter names for a function (ex: length, width)
+; Returns the parameter names for a function (ex: this, length, width)
 (define get-function-param-names
   (lambda (name environment)
-    (car (lookup name environment))))
+    (cons 'this (car (lookup name environment)))))
 
 ; Returns the function body as stored in the environment
 (define get-function-body-environment
@@ -287,10 +302,11 @@
 
 ; Interprets a function declaration
 (define interpret-function-declare
-  (lambda (statement environment)
-    (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
+  (lambda (statement environment throw)
+    (cond ((eq? (get-function-name statement) 'main) (interpret-function-call statement environment throw #t))
+          (else (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
                                            (get-function-body statement) (get-ID (topframe environment)))
-            environment)))
+            environment)))))
 
 ; Returns the identifier for a layer in the evironment 
 (define get-ID caddr)
@@ -322,16 +338,15 @@
       ((eq? '> (operator expr)) (> op1value (eval-expression (operand2 expr) environment throw)))
       ((eq? '<= (operator expr)) (<= op1value (eval-expression (operand2 expr) environment throw)))
       ((eq? '>= (operator expr)) (>= op1value (eval-expression (operand2 expr) environment throw)))
-      ((eq? '|| (operator expr)) (or op1value (eval-expression (operand2 expr) environment throw)))
-      ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment throw)))
-      ((eq? 'dot (operator expr)) (interpret-dot (eval-expression op1value environment throw) (eval-expression (operand2 expr) environment throw)))
+      ((eq? '|| (operator expr)) (or op1value (eval-expression (operand2 expr) environment throw)))      ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment throw)))
+      ((eq? 'dot (operator expr)) (interpret-dot (eval-expression op1value environment throw) (operand2 expr) environment throw))
       (else (myerror "Unknown operator:" (operator expr))))))
 
 
 ; Interprets the dot operator and returns the field/method closure that the dot is referencing
 (define interpret-dot
   (lambda (obj construct environment throw)
-    (lookup construct (lookup obj environment))))
+    (lookup construct obj)))
 
 
 ; Determines if two values are equal.  We need a special test because there are both boolean and integer types.
