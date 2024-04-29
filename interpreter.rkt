@@ -16,9 +16,14 @@
     (scheme->language
      (call/cc
       (lambda (return)
-        (interpret-statement-list (parser file) (newenvironment) return
+        (interpret-statement-list (add-call-to-main (parser file) classname) (newenvironment) return
                                   (lambda (env) (myerror "Break used outside of loop")) (lambda (env) (myerror "Continue used outside of loop"))
                                   (lambda (v env) (myerror "Uncaught exception thrown")) #f))))))
+
+; Takes a list of lists (the parse tree) and adds a call to main at the end
+(define add-call-to-main
+  (lambda (file classname)
+    (append file (list (append '(main-call main ()) (cons classname '()))))))
 
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
@@ -47,8 +52,14 @@
       ((eq? 'function (statement-type statement)) (interpret-function-declare statement environment throw))
       ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment throw #f))
       ((eq? 'class (statement-type statement)) (interpret-class-definition statement environment return break continue throw useReturn))
+      ((eq? 'static-function (statement-type statement)) (interpret-function-declare statement environment throw))
+      ((eq? 'main-call (statement-type statement)) (main-call statement environment throw #f))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
+
+(define interpret-main
+  (lambda (statement environment return break continue throw useReturn)
+    (interpret-statement-list (get-function-body statement) environment return break continue throw useReturn)))
 
 ;; class has:  (instance variable names and method names) (instance variable values/expr and method closures) classID (super's ID)
 ; '((A B) (((y x main) (10 5 (main closure)) A superID) B-info) global null)
@@ -100,7 +111,7 @@
 (define get-obj-closure-helper
   (lambda (classID environment closure)
     (cond ((eq? classID 'global) closure)
-          (else (get-obj-closure-helper (get-link (get-class-closure classID)) environment (append closure (list (get-class-closure classID environment))))))))
+          (else (get-obj-closure-helper (get-link (get-class-closure classID environment)) environment (append closure (list (get-class-closure classID environment))))))))
     
 ; Returns a class closure from the environment
 (define get-class-closure
@@ -244,18 +255,30 @@
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
                  (interpret-statement-list (cadr function-closure) new-env new-return new-break new-continue throw (or useReturn (eq? 'main (get-function-name statement))))))
                      (else
-                      (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement (if (eq? 'main (get-function-name statement))
-                                                                                                                                                                                 null
-                                                                                                                                                                                 (lookup 'this environment))))
-                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement)
-                                                                                                                                       environment))
+                      (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement
+                                                              (if (eq? 'main (get-function-name statement)) '() (lookup 'this environment)))
+                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement) environment))
                                                               throw useReturn))
                      (function-body (get-function-body-environment (get-function-name statement) environment))
                      (new-break (lambda (s) (error "Break out of loop")))
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
-                 (interpret-statement-list function-body new-env new-return new-break new-continue throw useReturn)))))))
+                 (interpret-statement-list function-body new-env new-return new-break new-continue throw useReturn))))))))
 
 
+(define main-call
+  (lambda (statement environment throw useReturn)
+    (call/cc (lambda (new-return) 
+               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement
+                                                              (if (eq? 'main (get-function-name statement)) '() (lookup 'this environment)))
+                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement) environment))
+                                                              throw useReturn))
+                     (function-body (lookup 'main (lookup (get-main-class-name statement) environment)))
+                     (new-break (lambda (s) (error "Break out of loop")))
+                     (new-continue (lambda (s) (error "Continue used outside of loop"))))
+                 (interpret-statement-list function-body new-env new-return new-break new-continue throw useReturn))))))
+
+
+(define get-main-class-name cadddr)
 
 
 ; Returns the new environment with all parameters inserted into the top layer
