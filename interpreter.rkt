@@ -23,7 +23,7 @@
 ; Takes a list of lists (the parse tree) and adds a call to main at the end
 (define add-call-to-main
   (lambda (file classname)
-    (append file (list (append '(main-call main ()) (cons classname '()))))))
+    (append file (list (append '(main-call main ()) (cons (string->symbol classname) '()))))))
 
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
@@ -53,7 +53,7 @@
       ((eq? 'funcall (statement-type statement)) (interpret-function-call statement environment throw #f))
       ((eq? 'class (statement-type statement)) (interpret-class-definition statement environment return break continue throw useReturn))
       ((eq? 'static-function (statement-type statement)) (interpret-function-declare statement environment throw))
-      ((eq? 'main-call (statement-type statement)) (main-call statement environment throw #f))
+      ((eq? 'main-call (statement-type statement)) (main-call statement environment throw #t))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 
@@ -77,14 +77,16 @@
 ;Interprets a class definition
 (define interpret-class-definition
   (lambda (statement environment return break continue throw useReturn)
-    (insert (get-class-def-name statement) (topframe (interpret-statement-list (get-class-body statement)
-            (push-frame environment (get-class-def-name statement) (get-class-superID statement)) return break continue throw useReturn)) environment)))
+    (insert (get-class-def-name statement) (list (topframe (interpret-statement-list (get-class-body statement)
+            (push-frame environment (get-class-def-name statement) (get-class-superID statement)) return break continue throw useReturn))) environment)))
     
 ;Returns the class' super
 (define get-class-superID
   (lambda (statement)
-    (cond ((null? (caddr statement)) 'global)
-    (else (cadr (caddr statement))))))
+    (cond ((null? (get-superID statement)) 'global)
+    (else (cadr (get-superID statement))))))
+
+(define get-superID caddr)
 
 ;Returns the class body
 (define get-class-body cadddr)
@@ -111,7 +113,7 @@
 (define get-obj-closure-helper
   (lambda (classID environment closure)
     (cond ((eq? classID 'global) closure)
-          (else (get-obj-closure-helper (get-link (get-class-closure classID environment)) environment (append closure (list (get-class-closure classID environment))))))))
+          (else (get-obj-closure-helper (get-link (topframe (get-class-closure classID environment))) environment (append closure (list (get-class-closure classID environment))))))))
     
 ; Returns a class closure from the environment
 (define get-class-closure
@@ -245,7 +247,7 @@
 (define interpret-function-call
   (lambda (statement environment throw useReturn)
     (call/cc (lambda (new-return) 
-               (cond ((list? (get-function-name statement))
+               (cond ((list? (get-function-name statement)) ; Dot operator
                       (let* ((function-closure (eval-expression (get-function-name statement) environment throw))
                              (new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement function-closure)
                                                               (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement)
@@ -253,10 +255,10 @@
                                                               throw useReturn))
                      (new-break (lambda (s) (error "Break out of loop")))
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
-                 (interpret-statement-list (cadr function-closure) new-env new-return new-break new-continue throw (or useReturn (eq? 'main (get-function-name statement))))))
-                     (else
+                 (interpret-statement-list (get-function-body-closure function-closure) new-env new-return new-break new-continue throw useReturn)))
+                     (else ; Regular function call
                       (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement
-                                                              (if (eq? 'main (get-function-name statement)) '() (lookup 'this environment)))
+                                                              (lookup 'this environment))
                                                               (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement) environment))
                                                               throw useReturn))
                      (function-body (get-function-body-environment (get-function-name statement) environment))
@@ -268,16 +270,13 @@
 (define main-call
   (lambda (statement environment throw useReturn)
     (call/cc (lambda (new-return) 
-               (let ((new-env (interpret-function-call-helper (get-function-param-names (get-function-name statement) environment) (get-function-param-vals statement
-                                                              (if (eq? 'main (get-function-name statement)) '() (lookup 'this environment)))
-                                                              (push-frame environment (get-function-name statement) (get-function-link (get-function-name statement) environment))
-                                                              throw useReturn))
-                     (function-body (lookup 'main (lookup (get-main-class-name statement) environment)))
+               (let ((new-env (push-frame environment 'main 'global))
+                     (function-closure (lookup 'main (lookup (get-main-class-name statement) environment)))
                      (new-break (lambda (s) (error "Break out of loop")))
                      (new-continue (lambda (s) (error "Continue used outside of loop"))))
-                 (interpret-statement-list function-body new-env new-return new-break new-continue throw useReturn))))))
+                 (interpret-statement-list (get-function-body-closure function-closure) new-env new-return new-break new-continue throw useReturn))))))
 
-
+(define get-function-body-closure cadr)
 (define get-main-class-name cadddr)
 
 
@@ -324,13 +323,20 @@
     (list param-list body static-link)))
 
 ; Interprets a function declaration
-(define interpret-function-declare
+(define interpret-function-declareOLD
   (lambda (statement environment throw)
     (cond ((eq? (get-function-name statement) 'main) (interpret-function-call statement environment throw #t))
           (else (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
                                            (get-function-body statement) (get-ID (topframe environment)))
             environment)))))
 
+
+; Interprets a function declaration
+(define interpret-function-declare
+  (lambda (statement environment throw)
+    (insert (get-function-name statement) (pack-function-definition (get-function-params statement)
+                                           (get-function-body statement) (get-ID (topframe environment)))
+            environment)))
 ; Returns the identifier for a layer in the evironment 
 (define get-ID caddr)
 
